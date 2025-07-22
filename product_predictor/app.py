@@ -27,8 +27,19 @@ class NumpyJSONProvider(DefaultJSONProvider):
 # Set the custom JSON provider for Flask 2.2+
 app.json = NumpyJSONProvider(app)
 
-# Create logs directory first
-os.makedirs('/app/logs', exist_ok=True)
+# Create logs directory in the current working directory or user's home
+def get_log_directory():
+    """Get appropriate log directory based on environment"""
+    if os.path.exists('/app') and os.access('/app', os.W_OK):
+        # Docker/container environment
+        return '/app/logs'
+    else:
+        # Local development environment
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(current_dir, 'logs')
+
+LOG_DIR = get_log_directory()
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # Configure logging for ELK Stack
 logging.basicConfig(
@@ -38,7 +49,8 @@ logging.basicConfig(
 
 # Create ELK-compatible logger
 elk_logger = logging.getLogger('ml_api')
-handler = logging.FileHandler('/app/logs/ml_api.log')
+log_file_path = os.path.join(LOG_DIR, 'ml_api.log')
+handler = logging.FileHandler(log_file_path)
 handler.setFormatter(logging.Formatter(
     '{"timestamp": "%(asctime)s", "level": "%(levelname)s", "service": "ml_api", '
     '"host": "' + socket.gethostname() + '", "message": %(message)s}'
@@ -192,7 +204,8 @@ def health():
             "status": "healthy",
             "message": "ML API is running",
             "timestamp": datetime.utcnow().isoformat(),
-            "predictor_status": "operational" if test_result else "warning"
+            "predictor_status": "operational" if test_result else "warning",
+            "log_directory": LOG_DIR
         }
         
         elk_logger.info(json.dumps({
@@ -223,13 +236,13 @@ def metrics():
             "service": "ml_api",
             "status": "running",
             "timestamp": datetime.utcnow().isoformat(),
-            "host": socket.gethostname()
+            "host": socket.gethostname(),
+            "log_directory": LOG_DIR
         }
         return jsonify(metrics_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    # Create logs directory
-    os.makedirs('/app/logs', exist_ok=True)
+    print(f"Logs will be written to: {LOG_DIR}")
     app.run(host='0.0.0.0', port=5000, debug=False)
