@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Category Predictor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🏭 Product Category Predictor</h1>
+            <p>Intelligent ML-powered product categorization system</p>
+        </header>
+
+        <main>
+            <div class="tabs">
+                <button class="tab-button active" onclick="showTab('single')">Single Product</button>
+                <button class="tab-button" onclick="showTab('multiple')">Multiple Products</button>
+            </div>
+
+            <!-- Single Product Tab -->
+            <div id="single-tab" class="tab-content active">
+                <div class="input-section">
+                    <label for="single-input">Product Description:</label>
+                    <input type="text" id="single-input" placeholder="e.g., Motor for Conveyor" />
+                    <button onclick="predictSingle()">🔍 Predict Category</button>
+                </div>
+                <div id="single-result" class="result-section"></div>
+            </div>
+
+            <!-- Multiple Products Tab -->
+            <div id="multiple-tab" class="tab-content">
+                <div class="input-section">
+                    <label for="multiple-input">Product Descriptions (one per line):</label>
+                    <textarea id="multiple-input" placeholder="Motor for Conveyor&#10;Switch for Hoist&#10;Valve for Boiler"></textarea>
+                    <button onclick="predictMultiple()">🔍 Predict All Categories</button>
+                </div>
+                <div id="multiple-result" class="result-section"></div>
+            </div>
+        </main>
+
+        <footer>
+            <p>Powered by ML • Sentence-BERT • Flask</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

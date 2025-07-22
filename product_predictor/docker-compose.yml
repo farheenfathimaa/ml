@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # Your ML Application
+  product-predictor:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+    mem_limit: 2g
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - elk-network
+
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
+    container_name: elasticsearch
+    environment:
+      - node.name=elasticsearch
+      - cluster.name=ml-cluster
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    mem_limit: 1g
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - elk-network
+
+  # Logstash
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.17.9
+    container_name: logstash
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./logs:/app/logs:ro
+    ports:
+      - "5044:5044"
+    environment:
+      LS_JAVA_OPTS: "-Xmx256m -Xms256m"
+    mem_limit: 512m
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - elk-network
+    depends_on:
+      - elasticsearch
+
+  # Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.9
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+    mem_limit: 512m
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - elk-network
+    depends_on:
+      - elasticsearch
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - product-predictor
+      - kibana
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - elk-network
+
+volumes:
+  elasticsearch-data:
+    driver: local
+
+networks:
+  elk-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.driver.mtu: "1500"
