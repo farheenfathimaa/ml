@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from flask.json.provider import DefaultJSONProvider
 from ml_model import get_predictor
 import os
 import logging
@@ -6,8 +7,28 @@ import json
 import time
 from datetime import datetime
 import socket
+import numpy as np
 
 app = Flask(__name__)
+
+# Configure Flask to handle numpy types in JSON serialization
+class NumpyJSONProvider(DefaultJSONProvider):
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        return super().default(obj)
+
+# Set the custom JSON provider for Flask 2.2+
+app.json = NumpyJSONProvider(app)
+
+# Create logs directory first
+os.makedirs('/app/logs', exist_ok=True)
 
 # Configure logging for ELK Stack
 logging.basicConfig(
@@ -24,6 +45,23 @@ handler.setFormatter(logging.Formatter(
 ))
 elk_logger.addHandler(handler)
 elk_logger.setLevel(logging.INFO)
+
+def convert_numpy_types(obj):
+    """Recursively convert numpy types to Python native types"""
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    else:
+        return obj
 
 def log_prediction(query_type, input_data, result, processing_time, client_ip):
     """Log prediction for ELK monitoring"""
@@ -53,6 +91,8 @@ def log_prediction(query_type, input_data, result, processing_time, client_ip):
     else:
         log_data["error"] = result.get('error', 'Unknown error')
     
+    # Convert numpy types before logging
+    log_data = convert_numpy_types(log_data)
     elk_logger.info(json.dumps(log_data))
 
 @app.route('/')
@@ -86,6 +126,9 @@ def predict():
                 return jsonify(result), 400
             
             prediction = predictor.predict_category(description)
+            # Convert numpy types in prediction
+            prediction = convert_numpy_types(prediction)
+            
             result = {
                 'success': True,
                 'type': 'single',
@@ -107,6 +150,9 @@ def predict():
                 return jsonify(result), 400
             
             predictions = predictor.predict_multiple(descriptions)
+            # Convert numpy types in predictions
+            predictions = convert_numpy_types(predictions)
+            
             result = {
                 'success': True,
                 'type': 'multiple',
