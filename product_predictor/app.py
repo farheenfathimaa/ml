@@ -1,397 +1,212 @@
-from flask import Flask, render_template, request, jsonify
-from flask.json.provider import DefaultJSONProvider
-from ml_model import get_predictor
-import os
 import logging
+import logging.handlers
 import json
-import time
-from datetime import datetime
 import socket
-import numpy as np
+import os
+from datetime import datetime
+from flask import Flask, request, jsonify
+import pandas as pd
+import re
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import sys
 
-app = Flask(__name__)
+from new_feature import FeaturePredictor, find_and_add_features
 
-# Configure Flask to handle numpy types in JSON serialization
-class NumpyJSONProvider(DefaultJSONProvider):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, np.bool_):
-            return bool(obj)
-        return super().default(obj)
-
-# Set the custom JSON provider for Flask 2.2+
-app.json = NumpyJSONProvider(app)
-
-# Create logs directory in the current working directory or user's home
-def get_log_directory():
-    """Get appropriate log directory based on environment"""
-    if os.path.exists('/app') and os.access('/app', os.W_OK):
-        # Docker/container environment
-        return '/app/logs'
-    else:
-        # Local development environment
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(current_dir, 'logs')
-
-LOG_DIR = get_log_directory()
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Configure logging for ELK Stack
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-# Enhanced ELK-compatible JSON formatter
-class ELKJsonFormatter(logging.Formatter):
+# --- Logging Configuration for Logstash ---
+class JSONFormatter(logging.Formatter):
     def format(self, record):
-        log_data = {
-            "@timestamp": datetime.utcnow().isoformat(),
+        log_record = {
+            "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
-            "service": "product-predictor",
-            "host": socket.gethostname(),
-            "logger": record.name,
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno
+            "message": record.getMessage(),
+            "logger_name": record.name,
+            "pathname": record.pathname,
+            "lineno": record.lineno,
+            "funcName": record.funcName,
+            "process": record.process,
+            "thread": record.thread,
         }
-        
-        # Parse message if it's JSON, otherwise use as string
+        if hasattr(record, 'extra_data'):
+            log_record.update(record.extra_data)
+        if record.exc_info:
+            log_record["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+class LogstashSocketHandler(logging.handlers.SocketHandler):
+    def emit(self, record):
         try:
-            message_data = json.loads(record.getMessage())
-            log_data.update(message_data)
-        except (json.JSONDecodeError, ValueError):
-            log_data["message"] = record.getMessage()
-        
-        return json.dumps(log_data)
+            msg = self.formatter.format(record) + '\n'
+            self.send(msg.encode('utf-8'))
+        except Exception:
+            self.handleError(record)
 
-# Create multiple loggers for different log types
-def setup_loggers():
-    # Main API logger
-    api_logger = logging.getLogger('ml_api')
-    api_handler = logging.FileHandler(os.path.join(LOG_DIR, 'ml_api.log'))
-    api_handler.setFormatter(ELKJsonFormatter())
-    api_logger.addHandler(api_handler)
-    api_logger.setLevel(logging.INFO)
-    
-    # Predictions logger
-    prediction_logger = logging.getLogger('predictions')
-    prediction_handler = logging.FileHandler(os.path.join(LOG_DIR, 'predictions.log'))
-    prediction_handler.setFormatter(ELKJsonFormatter())
-    prediction_logger.addHandler(prediction_handler)
-    prediction_logger.setLevel(logging.INFO)
-    
-    # Error logger
-    error_logger = logging.getLogger('errors')
-    error_handler = logging.FileHandler(os.path.join(LOG_DIR, 'errors.log'))
-    error_handler.setFormatter(ELKJsonFormatter())
-    error_logger.addHandler(error_handler)
-    error_logger.setLevel(logging.ERROR)
-    
-    return api_logger, prediction_logger, error_logger
+LOGSTASH_HOST = os.getenv('LOGSTASH_HOST', 'localhost')
+LOGSTASH_PORT = int(os.getenv('LOGSTASH_PORT', 5044))
 
-# Initialize loggers
-elk_logger, prediction_logger, error_logger = setup_loggers()
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
 
-def convert_numpy_types(obj):
-    """Recursively convert numpy types to Python native types"""
-    if isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    elif isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, np.bool_):
-        return bool(obj)
-    else:
-        return obj
+if root_logger.handlers:
+    for handler in root_logger.handlers:
+        root_logger.removeHandler(handler)
 
-def log_prediction(query_type, input_data, result, processing_time, client_ip):
-    """Enhanced prediction logging for ELK monitoring"""
-    log_data = {
-        "event_type": "ml_prediction",
-        "query_type": query_type,
-        "processing_time_ms": round(processing_time * 1000, 2),
-        "client_ip": client_ip,
-        "success": result.get('success', False),
-        "user_agent": request.headers.get('User-Agent', 'Unknown'),
-        "request_id": f"req_{int(time.time() * 1000)}"
-    }
-    
-    # Add input data summary (not full data for privacy/size)
-    if query_type == 'single':
-        log_data["input_summary"] = {
-            "description_length": len(str(input_data.get('description', '')))
-        }
-    else:
-        descriptions = input_data.get('descriptions', [])
-        log_data["input_summary"] = {
-            "num_descriptions": len(descriptions),
-            "avg_description_length": sum(len(str(d)) for d in descriptions) / len(descriptions) if descriptions else 0
-        }
-    
-    if result.get('success'):
-        if query_type == 'single':
-            log_data.update({
-                "predicted_category": result['result']['Predicted Cat Name'],
-                "category_id": result['result']['Predicted Cat ID'],
-                "confidence_score": result['result']['Confidence Score'],
-                "original_query": result['result']['original_query']
-            })
+console_handler = logging.StreamHandler()
+console_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(console_formatter)
+root_logger.addHandler(console_handler)
+
+logstash_enabled = os.getenv('ENABLE_LOGSTASH', 'false').lower() == 'true'
+if logstash_enabled:
+    try:
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.settimeout(2)
+        result = test_socket.connect_ex((LOGSTASH_HOST, LOGSTASH_PORT))
+        test_socket.close()
+        if result == 0:
+            logstash_handler = LogstashSocketHandler(LOGSTASH_HOST, LOGSTASH_PORT)
+            logstash_handler.setFormatter(JSONFormatter())
+            root_logger.addHandler(logstash_handler)
+            print(f"Logstash handler configured for {LOGSTASH_HOST}:{LOGSTASH_PORT}")
         else:
-            results = result.get('results', [])
-            if results:
-                log_data.update({
-                    "num_predictions": len(results),
-                    "avg_confidence": sum(r['Confidence Score'] for r in results) / len(results),
-                    "min_confidence": min(r['Confidence Score'] for r in results),
-                    "max_confidence": max(r['Confidence Score'] for r in results)
-                })
-    else:
-        log_data["error"] = result.get('error', 'Unknown error')
-        # Log to error logger as well
-        error_logger.error(json.dumps({
-            "event_type": "prediction_error",
-            "error": result.get('error', 'Unknown error'),
-            "client_ip": client_ip,
-            "processing_time_ms": round(processing_time * 1000, 2)
-        }))
+            print(f"Warning: Cannot connect to Logstash at {LOGSTASH_HOST}:{LOGSTASH_PORT}")
+    except Exception as e:
+        print(f"Warning: Could not connect to Logstash at {LOGSTASH_HOST}:{LOGSTASH_PORT}. Error: {e}")
+else:
+    print("Logstash logging disabled. Set ENABLE_LOGSTASH=true to enable.")
+
+logger = logging.getLogger(__name__)
+
+# --- Product Predictor Model Logic ---
+try:
+    # Use the absolute path provided by the user
+    data_path = "/home/farheenfathimaa/ml-projects/product_predictor/data/oio_category.csv"
+    test_data = pd.read_csv(data_path)
+    categories = test_data[['category_id', 'name']].drop_duplicates().reset_index(drop=True)
+
+    tech_corrections = {
+        'motr': 'motor', 'wasing': 'washing', 'machn': 'machine',
+        'pmp': 'pump', 'dishwshr': 'dishwasher', 'blwr': 'blower',
+        'heetr': 'heater', 'gyser': 'geyser', 'swich': 'switch',
+        'grndr': 'grinder', 'compresr': 'compressor', 'sensr': 'sensor',
+        'turbin': 'turbine', 'reley': 'relay', 'circut': 'circuit',
+        'invertr': 'inverter', 'modul': 'module', 'solr': 'solar',
+        'bearng': 'bearing', 'rollr': 'roller', 'actuatrr': 'actuator',
+        'dampr': 'damper', 'driv': 'drive', 'extruuder': 'extruder',
+        'couplng': 'coupling', 'bernr': 'burner', 'sytem': 'system',
+        'ctrl': 'control', 'bord': 'board', 'un': 'unit', 'fl': 'unit'
+    }
+
+    def preprocess_text(text):
+        text = str(text).lower()
+        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
+        return text.strip()
+
+    def correct_spelling(query):
+        words = query.lower().split()
+        corrected_words = [tech_corrections.get(word, word) for word in words]
+        return ' '.join(corrected_words)
+
+    # Preprocess category names
+    test_names = categories['name'].apply(preprocess_text).tolist()
     
-    # Convert numpy types before logging
-    log_data = convert_numpy_types(log_data)
-    prediction_logger.info(json.dumps(log_data))
+    # Load the pre-trained model
+    model1 = SentenceTransformer('all-MiniLM-L6-v2')
+    
+    # Generate embeddings for all category names
+    category_embeddings = model1.encode(test_names, convert_to_tensor=True)
 
-# Request logging middleware
-@app.before_request
-def log_request_start():
-    request.start_time = time.time()
-    elk_logger.info(json.dumps({
-        "event_type": "request_start",
-        "method": request.method,
-        "url": request.url,
-        "endpoint": request.endpoint,
-        "client_ip": request.remote_addr,
-        "user_agent": request.headers.get('User-Agent', 'Unknown')
-    }))
+except Exception as e:
+    logger.error(f"Failed to load ML model or data: {e}")
+    sys.exit(1)
 
-@app.after_request
-def log_request_end(response):
-    if hasattr(request, 'start_time'):
-        duration = time.time() - request.start_time
-        elk_logger.info(json.dumps({
-            "event_type": "request_end",
-            "method": request.method,
-            "endpoint": request.endpoint,
-            "status_code": response.status_code,
-            "client_ip": request.remote_addr,
-            "duration_ms": round(duration * 1000, 2)
-        }))
-    return response
+class ProductPredictor:
+    def predict_single(self, description):
+        try:
+            original_query = description
+            
+            # Correct spelling using the technical terms dictionary
+            corrected_query = correct_spelling(description)
+            used_query = corrected_query if corrected_query != description else description
+
+            # Preprocess and encode the input
+            processed_text = preprocess_text(used_query)
+            query_embedding = model1.encode(processed_text, convert_to_tensor=True)
+
+            # Calculate similarity with all categories
+            similarities = cosine_similarity(
+                query_embedding.reshape(1, -1),
+                category_embeddings.cpu().numpy()
+            ).flatten()
+
+            best_idx = similarities.argmax()
+            best_score = similarities[best_idx]
+
+            best_cat_id = categories.iloc[best_idx]['category_id']
+            best_cat_name = categories.iloc[best_idx]['name']
+
+            return {
+                'category': best_cat_name,
+                'confidence': f"{best_score:.2f}",
+                'id': str(best_cat_id),
+                'processed_query': used_query
+            }
+        except Exception as e:
+            logger.error(f"Error during single prediction: {e}")
+            return {
+                'category': "Prediction Failed",
+                'confidence': "0.00",
+                'id': "N/A",
+                'processed_query': description
+            }
+
+    def predict_multiple(self, descriptions):
+        results = []
+        for desc in descriptions:
+            prediction = self.predict_single(desc)
+            results.append(prediction)
+        return results
+
+predictor = ProductPredictor()
+feature_predictor = FeaturePredictor()
+
+# --- Flask Application Routes ---
+app = Flask(__name__)
 
 @app.route('/')
 def home():
-    elk_logger.info(json.dumps({
-        "event_type": "page_access", 
-        "page": "home", 
-        "client_ip": request.remote_addr
-    }))
-    return render_template('index.html')
-
-@app.route('/predict', methods=['POST'])
-def predict():
-    start_time = time.time()
-    client_ip = request.remote_addr
-    
     try:
-        data = request.json
-        query_type = data.get('type', 'single')
-        
-        elk_logger.info(json.dumps({
-            "event_type": "prediction_request",
-            "query_type": query_type,
-            "client_ip": client_ip
-        }))
-        
-        predictor = get_predictor()
-        
-        if query_type == 'single':
-            description = data.get('description', '').strip()
-            if not description:
-                result = {'error': 'Please provide a product description', 'success': False}
-                log_prediction(query_type, data, result, time.time() - start_time, client_ip)
-                return jsonify(result), 400
-            
-            prediction = predictor.predict_category(description)
-            # Convert numpy types in prediction
-            prediction = convert_numpy_types(prediction)
-            
-            result = {
-                'success': True,
-                'type': 'single',
-                'result': prediction
-            }
-            
-        elif query_type == 'multiple':
-            descriptions = data.get('descriptions', [])
-            if not descriptions:
-                result = {'error': 'Please provide product descriptions', 'success': False}
-                log_prediction(query_type, data, result, time.time() - start_time, client_ip)
-                return jsonify(result), 400
-            
-            # Filter empty descriptions
-            descriptions = [desc.strip() for desc in descriptions if desc.strip()]
-            if not descriptions:
-                result = {'error': 'Please provide valid product descriptions', 'success': False}
-                log_prediction(query_type, data, result, time.time() - start_time, client_ip)
-                return jsonify(result), 400
-            
-            predictions = predictor.predict_multiple(descriptions)
-            # Convert numpy types in predictions
-            predictions = convert_numpy_types(predictions)
-            
-            result = {
-                'success': True,
-                'type': 'multiple',
-                'results': predictions
-            }
-        
-        else:
-            result = {'error': 'Invalid query type', 'success': False}
-            log_prediction(query_type, data, result, time.time() - start_time, client_ip)
-            return jsonify(result), 400
-        
-        # Log successful prediction
-        log_prediction(query_type, data, result, time.time() - start_time, client_ip)
-        return jsonify(result)
-    
-    except Exception as e:
-        result = {'error': f'Prediction failed: {str(e)}', 'success': False}
-        log_prediction(query_type if 'query_type' in locals() else 'unknown', 
-                      data if 'data' in locals() else {}, 
-                      result, time.time() - start_time, client_ip)
-        error_logger.error(json.dumps({
-            "event_type": "prediction_exception",
-            "error": str(e),
-            "client_ip": client_ip,
-            "exception_type": type(e).__name__
-        }))
-        return jsonify(result), 500
+        return open("templates/index.html").read()
+    except FileNotFoundError:
+        return "<h1>Product Predictor API</h1><p>Use /predict_single or /predict_multiple endpoints</p>"
 
-@app.route('/health')
-def health():
-    try:
-        # Test predictor availability
-        predictor = get_predictor()
-        test_result = predictor.predict_category("test motor")
-        
-        health_data = {
-            "status": "healthy",
-            "message": "ML API is running",
-            "timestamp": datetime.utcnow().isoformat(),
-            "predictor_status": "operational" if test_result else "warning",
-            "log_directory": LOG_DIR,
-            "version": "1.0.0",
-            "uptime": time.time()
-        }
-        
-        elk_logger.info(json.dumps({
-            "event_type": "health_check",
-            "status": "healthy",
-            "client_ip": request.remote_addr
-        }))
-        
-        return jsonify(health_data)
-    except Exception as e:
-        error_logger.error(json.dumps({
-            "event_type": "health_check_failed",
-            "error": str(e),
-            "client_ip": request.remote_addr
-        }))
-        return jsonify({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }), 500
+@app.route('/predict_single', methods=['POST'])
+def predict_single_product():
+    data = request.json
+    description = data.get('product_description')
+    if not description:
+        logger.error("Single product prediction: Missing 'product_description'")
+        return jsonify({"error": "Missing product_description"}), 400
 
-@app.route('/metrics')
-def metrics():
-    """Enhanced metrics endpoint for monitoring"""
-    try:
-        # You can expand this with actual metrics
-        metrics_data = {
-            "service": "product-predictor",
-            "status": "running",
-            "timestamp": datetime.utcnow().isoformat(),
-            "host": socket.gethostname(),
-            "log_directory": LOG_DIR,
-            "python_version": f"{socket.gethostname()}",
-            "disk_usage": {
-                "logs_dir": LOG_DIR,
-                "total_space": "N/A",  # You can add actual disk usage here
-                "free_space": "N/A"
-            }
-        }
-        
-        elk_logger.info(json.dumps({
-            "event_type": "metrics_access",
-            "client_ip": request.remote_addr
-        }))
-        
-        return jsonify(metrics_data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    prediction = predictor.predict_single(description)
+    logger.info(f"Single product prediction result: {prediction}")
+    prediction = find_and_add_features(prediction, feature_predictor)
+    return jsonify(prediction)
 
-# New endpoint for ELK testing
-@app.route('/test-logging')
-def test_logging():
-    """Endpoint to test different log levels and types"""
-    elk_logger.info(json.dumps({
-        "event_type": "test_info_log",
-        "message": "This is a test info log",
-        "client_ip": request.remote_addr
-    }))
-    
-    prediction_logger.info(json.dumps({
-        "event_type": "test_prediction_log",
-        "message": "This is a test prediction log",
-        "client_ip": request.remote_addr
-    }))
-    
-    error_logger.error(json.dumps({
-        "event_type": "test_error_log",
-        "message": "This is a test error log",
-        "client_ip": request.remote_addr
-    }))
-    
-    return jsonify({
-        "message": "Test logs generated successfully",
-        "timestamp": datetime.utcnow().isoformat(),
-        "logs_written_to": [
-            os.path.join(LOG_DIR, 'ml_api.log'),
-            os.path.join(LOG_DIR, 'predictions.log'),
-            os.path.join(LOG_DIR, 'errors.log')
-        ]
-    })
+@app.route('/predict_multiple', methods=['POST'])
+def predict_multiple_products():
+    data = request.json
+    descriptions = data.get('product_descriptions')
+    if not descriptions or not isinstance(descriptions, list):
+        logger.error("Multiple product prediction: Missing or invalid 'product_descriptions'")
+        return jsonify({"error": "Missing or invalid product_descriptions (expected a list)"}), 400
 
-if __name__ == '__main__':
-    print(f"Logs will be written to: {LOG_DIR}")
-    print(f"Log files: ml_api.log, predictions.log, errors.log")
-    
-    # Log application startup
-    elk_logger.info(json.dumps({
-        "event_type": "application_startup",
-        "service": "product-predictor",
-        "log_directory": LOG_DIR,
-        "host": socket.gethostname()
-    }))
-    
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    predictions = predictor.predict_multiple(descriptions)
+    # Corrected line to find and add the new features
+    predictions = [find_and_add_features(p, feature_predictor) for p in predictions]
+    logger.info(f"Multiple product predictions result: {predictions}")
+    return jsonify(predictions)
+
+if __name__ == "__main__":
+    logger.info("Starting Product Predictor application...")
+    app.run(debug=True, host='0.0.0.0', port=5000)

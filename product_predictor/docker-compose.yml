@@ -1,119 +1,72 @@
+# docker-compose.yml
 version: '3.8'
 
 services:
-  # Your ML Application
-  product-predictor:
-    build: 
-      context: .
-      dockerfile: Dockerfile
-      args:
-        - BUILDKIT_INLINE_CACHE=1
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    environment:
-      - FLASK_ENV=production
-    restart: unless-stopped
-    mem_limit: 2g
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    networks:
-      - elk-network
-
-  # Elasticsearch
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4 # Use a compatible version with Kibana/Logstash
     container_name: elasticsearch
     environment:
-      - node.name=elasticsearch
-      - cluster.name=ml-cluster
+      - xpack.security.enabled=false # Set to true and configure users/passwords for production
       - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - xpack.security.enabled=false
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m # Adjust memory as needed
     ports:
       - "9200:9200"
-    mem_limit: 1g
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    networks:
-      - elk-network
-
-  # Logstash
-  logstash:
-    image: docker.elastic.co/logstash/logstash:7.17.9
-    container_name: logstash
+      - "9300:9300"
     volumes:
-      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
-      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
-      - ./logs:/app/logs:ro
-    ports:
-      - "5044:5044"
-    environment:
-      LS_JAVA_OPTS: "-Xmx256m -Xms256m"
-    mem_limit: 512m
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - esdata:/usr/share/elasticsearch/data # Persist Elasticsearch data
     networks:
       - elk-network
-    depends_on:
-      - elasticsearch
 
-  # Kibana
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.4 # Use a compatible version
+    container_name: logstash
+    ports:
+      - "5000:5000/tcp" # Expose the TCP port for your application logs
+      - "9600:9600" # Logstash monitoring API
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf # Mount your Logstash config
+      # If you have custom Logstash config files, mount them here.
+      # - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml
+    environment:
+      LS_JAVA_OPTS: "-Xms256m -Xmx256m" # Adjust memory as needed
+      # Optional: For X-Pack security
+      # LOGSTASH_INTERNAL_PASSWORD: your_logstash_password
+    depends_on:
+      - elasticsearch # Logstash needs Elasticsearch to be running
+    networks:
+      - elk-network
+
   kibana:
-    image: docker.elastic.co/kibana/kibana:7.17.9
+    image: docker.elastic.co/kibana/kibana:8.13.4 # Use a compatible version
     container_name: kibana
     ports:
       - "5601:5601"
     environment:
-      ELASTICSEARCH_URL: http://elasticsearch:9200
-      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
-    mem_limit: 512m
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]' # Connects to Elasticsearch service
+      XPACK_SECURITY_ENABLED: 'false' # Set to true if X-Pack security is enabled in ES
+    depends_on:
+      - elasticsearch # Kibana needs Elasticsearch to be running
     networks:
       - elk-network
-    depends_on:
-      - elasticsearch
 
-  # Nginx Reverse Proxy
-  nginx:
-    image: nginx:alpine
-    container_name: nginx
+  # Your Flask application service
+  product_predictor_app:
+    build: . # Build from the current directory (where your Dockerfile for the app is)
+    container_name: product_predictor_app
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - "5001:5000" # Map host port 5001 to container port 5000 (your Flask app's default)
+    environment:
+      # Pass Logstash host and port to your application
+      LOGSTASH_HOST: logstash
+      LOGSTASH_PORT: 5000
     depends_on:
-      - product-predictor
-      - kibana
-    restart: unless-stopped
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
+      - logstash # Your app sends logs to Logstash, so Logstash should be ready
     networks:
       - elk-network
 
 volumes:
-  elasticsearch-data:
-    driver: local
+  esdata: # Volume for Elasticsearch data persistence
 
 networks:
   elk-network:
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.enable_ip_masquerade: "true"
-      com.docker.network.driver.mtu: "1500"

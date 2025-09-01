@@ -4,47 +4,236 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Product Category Predictor</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        /* Custom styles for a cleaner look */
+        body {
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, #a1c4fd 0%, #c2e9fb 100%);
+        }
+        .tab-button {
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s ease-in-out;
+        }
+        .tab-button.active {
+            border-bottom-color: #3b82f6;
+            font-weight: 600;
+            color: #1f2937;
+        }
+        textarea::-webkit-scrollbar {
+            width: 8px;
+        }
+        textarea::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        textarea::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        textarea::-webkit-scrollbar-thumb:hover {
+            background: #555;
+            border-radius: 10px;
+        }
+    </style>
 </head>
-<body>
-    <div class="container">
-        <header>
-            <h1>🏭 Product Category Predictor</h1>
-            <p>Intelligent ML-powered product categorization system</p>
+<body class="flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-4xl space-y-8 transition-all duration-300 ease-in-out">
+        <header class="bg-gray-800 text-white p-6 rounded-t-2xl -mt-8 -mx-8">
+            <div class="flex items-center justify-center space-x-2">
+                <i class="fas fa-cubes text-3xl text-indigo-400"></i>
+                <h1 class="text-4xl font-extrabold">Product Category Predictor</h1>
+            </div>
+            <p class="text-lg text-gray-300 mt-2 text-center">Intelligent ML-powered product categorization system</p>
         </header>
 
-        <main>
-            <div class="tabs">
-                <button class="tab-button active" onclick="showTab('single')">Single Product</button>
-                <button class="tab-button" onclick="showTab('multiple')">Multiple Products</button>
-            </div>
+        <div class="flex border-b border-gray-200">
+            <button id="single-tab-btn" class="flex-1 py-3 px-4 text-center text-gray-500 tab-button active">Single Product</button>
+            <button id="multiple-tab-btn" class="flex-1 py-3 px-4 text-center text-gray-500 tab-button">Multiple Products</button>
+        </div>
 
-            <!-- Single Product Tab -->
-            <div id="single-tab" class="tab-content active">
-                <div class="input-section">
-                    <label for="single-input">Product Description:</label>
-                    <input type="text" id="single-input" placeholder="e.g., Motor for Conveyor" />
-                    <button onclick="predictSingle()">🔍 Predict Category</button>
+        <div id="content-area" class="p-4">
+            <div id="single-product-content" class="tab-content transition-all duration-300 ease-in-out space-y-6">
+                <div class="flex flex-col">
+                    <label for="single-product-description" class="text-lg font-medium text-gray-700 mb-2">Product Description:</label>
+                    <input type="text" id="single-product-description" class="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200" placeholder="e.g., motor for conveyor">
                 </div>
-                <div id="single-result" class="result-section"></div>
-            </div>
-
-            <!-- Multiple Products Tab -->
-            <div id="multiple-tab" class="tab-content">
-                <div class="input-section">
-                    <label for="multiple-input">Product Descriptions (one per line):</label>
-                    <textarea id="multiple-input" placeholder="Motor for Conveyor&#10;Switch for Hoist&#10;Valve for Boiler"></textarea>
-                    <button onclick="predictMultiple()">🔍 Predict All Categories</button>
+                <button id="predict-single-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center space-x-2">
+                    <i class="fas fa-search"></i>
+                    <span>Predict Category</span>
+                </button>
+                <div id="single-prediction-result" class="mt-4 p-4 text-center text-gray-700 font-semibold bg-gray-100 border border-gray-200 rounded-lg hidden">
                 </div>
-                <div id="multiple-result" class="result-section"></div>
             </div>
-        </main>
 
-        <footer>
-            <p>Powered by ML • Sentence-BERT • Flask</p>
+            <div id="multiple-products-content" class="tab-content transition-all duration-300 ease-in-out space-y-6 hidden">
+                <div class="flex flex-col">
+                    <label for="multiple-products-descriptions" class="text-lg font-medium text-gray-700 mb-2">Product Descriptions (one per line)</label>
+                    <textarea id="multiple-products-descriptions" rows="5" class="p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors duration-200 resize-y" placeholder="e.g.,&#10;motor for conveyor&#10;switch for hoist"></textarea>
+                </div>
+                <button id="predict-multiple-btn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-200 flex items-center justify-center space-x-2">
+                    <i class="fas fa-th-list"></i>
+                    <span>Predict All Categories</span>
+                </button>
+                <div id="multiple-prediction-result" class="mt-4 p-4 text-gray-700 font-semibold bg-gray-100 border border-gray-200 rounded-lg hidden">
+                </div>
+            </div>
+        </div>
+
+        <footer class="text-center text-sm text-gray-500">
+            Powered by ML • Sentence-BERT • Flask
         </footer>
     </div>
 
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const singleTabBtn = document.getElementById('single-tab-btn');
+            const multipleTabBtn = document.getElementById('multiple-tab-btn');
+            const singleContent = document.getElementById('single-product-content');
+            const multipleContent = document.getElementById('multiple-products-content');
+
+            const singleDescription = document.getElementById('single-product-description');
+            const multipleDescriptions = document.getElementById('multiple-products-descriptions');
+            const predictSingleBtn = document.getElementById('predict-single-btn');
+            const predictMultipleBtn = document.getElementById('predict-multiple-btn');
+            const singleResultDiv = document.getElementById('single-prediction-result');
+            const multipleResultDiv = document.getElementById('multiple-prediction-result');
+
+            const showTab = (tabName) => {
+                if (tabName === 'single') {
+                    singleTabBtn.classList.add('active');
+                    multipleTabBtn.classList.remove('active');
+                    singleContent.classList.remove('hidden');
+                    multipleContent.classList.add('hidden');
+                } else {
+                    multipleTabBtn.classList.add('active');
+                    singleTabBtn.classList.remove('active');
+                    multipleContent.classList.remove('hidden');
+                    singleContent.classList.add('hidden');
+                }
+            };
+
+            singleTabBtn.addEventListener('click', () => showTab('single'));
+            multipleTabBtn.addEventListener('click', () => showTab('multiple'));
+
+            const showMessage = (message, type = 'info') => {
+                const existingMessage = document.getElementById('message-box');
+                if (existingMessage) existingMessage.remove();
+
+                const messageBox = document.createElement('div');
+                messageBox.id = 'message-box';
+                messageBox.className = `fixed bottom-4 right-4 z-50 p-4 rounded-lg shadow-lg text-white transition-opacity duration-300 ease-in-out ${type === 'error' ? 'bg-red-500' : 'bg-blue-500'}`;
+                messageBox.innerHTML = `
+                    <div class="flex items-center space-x-2">
+                        <i class="${type === 'error' ? 'fas fa-exclamation-triangle' : 'fas fa-info-circle'}"></i>
+                        <span>${message}</span>
+                    </div>
+                `;
+                document.body.appendChild(messageBox);
+                setTimeout(() => {
+                    messageBox.style.opacity = '0';
+                    setTimeout(() => messageBox.remove(), 300);
+                }, 3000);
+            };
+
+            predictSingleBtn.addEventListener('click', async () => {
+                const description = singleDescription.value.trim();
+                if (!description) {
+                    showMessage("Please enter a product description.", "error");
+                    return;
+                }
+                predictSingleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Predicting...';
+                predictSingleBtn.disabled = true;
+
+                try {
+                    const response = await fetch('/predict_single', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ product_description: description })
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        singleResultDiv.innerHTML = `
+                            <p>Category: <span class="text-blue-600 font-bold">${result.category}</span></p>
+                            <p>Confidence: <span class="text-blue-600 font-bold">${result.confidence}</span></p>
+                            <p>ID: <span class="text-blue-600 font-bold">${result.id}</span></p>
+                        `;
+                        singleResultDiv.classList.remove('hidden');
+                    } else {
+                        throw new Error(result.error || 'Prediction failed.');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    singleResultDiv.innerHTML = `<p class="text-red-500 font-bold">Error: ${error.message}</p>`;
+                    singleResultDiv.classList.remove('hidden');
+                    showMessage(`An error occurred: ${error.message}`, 'error');
+                } finally {
+                    predictSingleBtn.innerHTML = '<i class="fas fa-search"></i> Predict Category';
+                    predictSingleBtn.disabled = false;
+                }
+            });
+
+            predictMultipleBtn.addEventListener('click', async () => {
+                const descriptions = multipleDescriptions.value.trim().split('\n').filter(line => line.trim() !== '');
+                if (descriptions.length === 0) {
+                    showMessage("Please enter one or more product descriptions.", "error");
+                    return;
+                }
+                predictMultipleBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Predicting...';
+                predictMultipleBtn.disabled = true;
+
+                try {
+                    const response = await fetch('/predict_multiple', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ product_descriptions: descriptions })
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        const predictions = result || [];
+                        multipleResultDiv.innerHTML = predictions.map((p, i) => {
+                            // Check for the 'features' key before trying to access it
+                            const featureHtml = p.features ? 
+                                Object.entries(p.features).map(([key, value]) => 
+                                    `<p class="mt-1"><strong>${key}:</strong> ${Array.isArray(value) ? value.join(', ') : value}</p>`
+                                ).join('') : '';
+
+                            return `
+                                <div class="py-2 border-b border-gray-200 last:border-b-0">
+                                    <p class="text-gray-800"><span class="font-bold">${i + 1}. ${descriptions[i]}</span></p>
+                                    <div class="flex flex-col md:flex-row md:space-x-4 mt-2 text-sm text-gray-600">
+                                        <p>Category: <span class="text-blue-600 font-bold">${p.category}</span></p>
+                                        <p>Confidence: <span class="text-blue-600 font-bold">${p.confidence}</span></p>
+                                        <p>ID: <span class="text-blue-600 font-bold">${p.id}</span></p>
+                                    </div>
+                                    <div class="mt-2 text-xs text-gray-500">
+                                        ${featureHtml}
+                                    </div>
+                                </div>
+                            `;
+                        }).join('');
+                        multipleResultDiv.classList.remove('hidden');
+                    } else {
+                        throw new Error(result.error || 'Prediction failed.');
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    multipleResultDiv.innerHTML = `<p class="text-red-500 font-bold">Error: ${error.message}</p>`;
+                    multipleResultDiv.classList.remove('hidden');
+                    showMessage(`An error occurred: ${error.message}`, 'error');
+                } finally {
+                    predictMultipleBtn.innerHTML = '<i class="fas fa-th-list"></i> Predict All Categories';
+                    predictMultipleBtn.disabled = false;
+                }
+            });
+        });
+    </script>
 </body>
 </html>

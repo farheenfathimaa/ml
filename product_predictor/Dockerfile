@@ -1,48 +1,39 @@
-FROM python:3.9-slim
+# Dockerfile in the root of your product_predictor project
+# Using Debian 11 (Bullseye) which is more current than Buster (Debian 10)
+FROM python:3.9-slim-bullseye
 
 WORKDIR /app
 
-# Configure DNS and update package lists with retries
-RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf && \
-    echo "nameserver 1.1.1.1" >> /etc/resolv.conf
+# Set up DNS inside the container for apt-get during the build
+# This is a common workaround for "Temporary failure in name resolution" during apt-get update
+RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf.new && \
+    cat /etc/resolv.conf.new > /etc/resolv.conf && \
+    rm /etc/resolv.conf.new
 
-# Install system dependencies with retries and alternative mirrors
-RUN for i in 1 2 3; do \
-        apt-get update && \
-        apt-get install -y \
-            gcc \
-            g++ \
-            build-essential \
-            python3-dev \
-            curl \
-            wget \
-            ca-certificates \
-        && break || sleep 5; \
-    done && \
-    rm -rf /var/lib/apt/lists/*
+# Install build dependencies for some Python packages (e.g., torch, scikit-learn)
+# This is crucial for many scientific Python libraries as they often compile C extensions.
+# We also update pip itself.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/* && \
+    pip install --no-cache-dir --upgrade pip
 
-# Create logs directory
-RUN mkdir -p /app/logs
-
-# Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies with retries
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel --timeout=120 --retries=5
-RUN pip install --no-cache-dir -r requirements.txt --timeout=120 --retries=5
+# Use a specific index URL for pip install to bypass potential network/DNS issues
+# This forces pip to get packages from a reliable source directly.
+RUN pip install --no-cache-dir -r requirements.txt \
+    --index-url https://pypi.org/simple/ \
+    --trusted-host pypi.org \
+    --trusted-host files.pythonhosted.org
 
-# Copy application code
 COPY . .
 
-# Create data directory if it doesn't exist
-RUN mkdir -p /app/data
-
-# Expose port
+# Expose the port your Flask app runs on
 EXPOSE 5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
-
-# Run application
+# Command to run your Flask application
 CMD ["python", "app.py"]
