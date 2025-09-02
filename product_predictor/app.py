@@ -1,3 +1,4 @@
+# app.py
 import logging
 import logging.handlers
 import json
@@ -11,6 +12,11 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
 
+# Add the current directory to the system path to ensure imports work
+# This resolves the ModuleNotFoundError
+sys.path.insert(0, os.path.dirname(__file__))
+
+# Import the new_feature module now that the path is set
 from new_feature import FeaturePredictor, find_and_add_features
 
 # --- Logging Configuration for Logstash ---
@@ -79,8 +85,9 @@ logger = logging.getLogger(__name__)
 
 # --- Product Predictor Model Logic ---
 try:
-    # Use the absolute path provided by the user
-    data_path = "/home/farheenfathimaa/ml-projects/product_predictor/data/oio_category.csv"
+    # Use os.path.join for robust path handling
+    data_dir = os.path.join(os.path.dirname(__file__), 'data')
+    data_path = os.path.join(data_dir, "oio_category.csv")
     test_data = pd.read_csv(data_path)
     categories = test_data[['category_id', 'name']].drop_duplicates().reset_index(drop=True)
 
@@ -182,6 +189,9 @@ def home():
 
 @app.route('/predict_single', methods=['POST'])
 def predict_single_product():
+    # Reload features on each request to check for file changes
+    feature_predictor.load_features()
+    
     data = request.json
     description = data.get('product_description')
     if not description:
@@ -190,11 +200,17 @@ def predict_single_product():
 
     prediction = predictor.predict_single(description)
     logger.info(f"Single product prediction result: {prediction}")
+    
+    # Only add features if they exist
     prediction = find_and_add_features(prediction, feature_predictor)
+    
     return jsonify(prediction)
 
 @app.route('/predict_multiple', methods=['POST'])
 def predict_multiple_products():
+    # Reload features on each request to check for file changes
+    feature_predictor.load_features()
+    
     data = request.json
     descriptions = data.get('product_descriptions')
     if not descriptions or not isinstance(descriptions, list):
@@ -202,8 +218,10 @@ def predict_multiple_products():
         return jsonify({"error": "Missing or invalid product_descriptions (expected a list)"}), 400
 
     predictions = predictor.predict_multiple(descriptions)
+    
     # Corrected line to find and add the new features
     predictions = [find_and_add_features(p, feature_predictor) for p in predictions]
+    
     logger.info(f"Multiple product predictions result: {predictions}")
     return jsonify(predictions)
 
